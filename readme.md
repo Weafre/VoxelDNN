@@ -1,4 +1,4 @@
-#LEARNING-BASED LOSSLESS COMPRESSION OF 3D POINT CLOUD GEOMETRY
+# LEARNING-BASED LOSSLESS COMPRESSION OF 3D POINT CLOUD GEOMETRY
 * **Authors**:
 [Dat T. Nguyen](https://scholar.google.com/citations?hl=en&user=uqqqlGgAAAAJ),
 [Maurice Quach](https://scholar.google.com/citations?user=atvnc2MAAAAJ),
