@@ -35,8 +35,6 @@ def load_compressed_file(f):
     level = read_from_buffer(f, 1, np.uint8)[0]
     n_binstr = read_from_buffer(f, 1, np.uint16)[0]
     binstr = read_from_buffer(f, n_binstr, np.uint8)
-    # n_flags = read_from_buffer(f, 1, np.uint16)[0]
-    # flags = read_from_buffer(f, n_flags, np.uint8)
     file_end = f.read()
     assert file_end == b'', f'File not read completely file_end {file_end}'
     return binstr,resolution, level

@@ -9,17 +9,36 @@ from pyntcloud import PyntCloud
 import pandas as pd
 
 
-# voxelize the octree
-# import mayavi.mlab
 def timing(f):
     def wrap(*args, **kwargs):
         time1 = time.time()
         ret = f(*args, **kwargs)
         time2 = time.time()
-        #print('{:s} function took {:.3f} ms'.format(f.__name__, (time2 - time1) * 1000.0))
+        print('{:s} function took {:.3f} ms'.format(f.__name__, (time2 - time1) * 1000.0))
         return ret
 
     return wrap
+
+
+
+def voxel_block_2_octree(box,oct_seq):
+    box_size=box.shape[0]
+    child_bbox=int(box_size/2)
+    if(box_size>2):
+        for d in range(2):
+            for h in range(2):
+                for w in range(2):
+                    child_box=box[d * child_bbox:(d + 1) * child_bbox, h * child_bbox:(h + 1) * child_bbox, w * child_bbox:(w + 1) * child_bbox]
+                    if(np.sum(child_box)!=0):
+                        oct_seq.append(1)
+                        voxel_block_2_octree(child_box,oct_seq)
+                    else:
+                        oct_seq.append(0)
+    else:
+        curr_octant=[int(x) for x in box.flatten()]
+        oct_seq+=curr_octant
+    return oct_seq
+
 
 # generate bin stream from ply file
 def get_bin_stream_blocks(path_to_ply, pc_level, departition_level):
@@ -31,7 +50,6 @@ def get_bin_stream_blocks(path_to_ply, pc_level, departition_level):
     box = int(2 ** pc_level)
     blocks2, binstr2 = timing(partition_octree)(points, [0, 0, 0], [box, box, box], level)
     return no_oc_voxels, blocks2, binstr2
-
 
 
 # Main launcher
@@ -50,17 +68,6 @@ def input_fn(points, batch_size, dense_tensor_shape, data_format, repeat=True, s
     dataset = dataset.prefetch(prefetch_size)
 
     return dataset
-
-
-def adding_gaussain_noise(x, gaussian_power):
-    samples = gaussian_power * 1000
-    index1 = np.random.randint(0, 63, samples)
-    index2 = np.random.randint(0, 63, samples)
-    index3 = np.random.randint(0, 63, samples)
-    for i in range(samples):
-        x = tf.concat([x, [[index1[i], index2[i], index3[i]]]], 0)
-        # x.append([index1[i],index2[i],index3[i]])
-    return x
 
 
 def df_to_pc(df):
@@ -145,23 +152,3 @@ def load_points(files, batch_size=32):
     return points
 
 
-
-# blocks to occupancy maps
-def pc_2_block_oc3(blocks, bbox_max=512):
-    no_blocks = len(blocks)
-    blocks_oc = np.zeros((no_blocks, bbox_max, bbox_max, bbox_max, 1), dtype=np.float32)
-    for i, block in enumerate(blocks):
-        block = block[:, 0:3]
-        block = block.astype(np.uint32)
-        blocks_oc[i, block[:, 0], block[:, 1], block[:, 2], 0] = 1.0
-    return blocks_oc
-
-
-
-def occupancy_map_explore(ply_path, pc_level, departition_level):
-    no_oc_voxels, blocks, binstr = get_bin_stream_blocks(ply_path, pc_level, departition_level)
-    print('Finished loading model and ply to oc')
-    boxes = pc_2_block_oc3(blocks, bbox_max=64)
-    print('Boxes shape:', boxes.shape)
-    #print('Number of empty boxes 32: ', count)
-    return boxes, binstr, no_oc_voxels

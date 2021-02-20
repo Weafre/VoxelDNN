@@ -77,41 +77,37 @@ def partition_octree(points, bbox_min, bbox_max, level):
     np.testing.assert_array_equal(bbox_min, [0, 0, 0])
     bbox_max = np.asarray(bbox_max)
     geo_level = int(np.ceil(np.log2(np.max(bbox_max))))
-    assert geo_level >= level#check whether geo level larger than level, if not, raise an error
-    block_size = 2 ** (geo_level - level)#high level value --> smaller block size
+    assert geo_level >= level
+    block_size = 2 ** (geo_level - level)
 
     # Compute partitions for each point
     block_ids = points[:, :3] // block_size #floor division, like quantization
     block_ids = block_ids.astype(np.uint32)
     block_ids_unique, block_idx, block_len = np.unique(block_ids, return_inverse=True, return_counts=True, axis=0)
-    #block ids unique: unique triple sets of index in x,y,x direction
-    #block idx : index to reverse to the block-ids from block ids unique
-    #block-len: number of occurence of each element in block ids unique
 
     # Interleave coordinate bits to reorder by octree block order
     sort_key = []
     for x, y, z in block_ids_unique:
-        zip_params = [f'{v:0{geo_level - level}b}' for v in [z, y, x]]#output: 1008b, 1308b... 10,13 are z and y,
+        zip_params = [f'{v:0{geo_level - level}b}' for v in [z, y, x]]
         sort_key.append(''.join(i + j + k for i, j, k in zip(*zip_params)))
-    sort_idx = np.argsort(sort_key)#return index of value sorted array to reconstruct original
+    sort_idx = np.argsort(sort_key)
     block_ids_unique = block_ids_unique[sort_idx]
     block_len = block_len[sort_idx]
-    # invert permutation
     inv_sort_idx = np.zeros_like(sort_idx)
     inv_sort_idx[sort_idx] = np.arange(sort_idx.size)
     block_idx = inv_sort_idx[block_idx]
 
     # Translate points into local block coordinates
-    local_refs = np.pad(block_ids_unique[block_idx] * block_size, [[0, 0], [0, points.shape[1] - 3]])#add padding in block ids unique, to have the same size as points
-    points_local = points - local_refs#rotate,translate original coordinatte to box coordinate by subtract the reference
+    local_refs = np.pad(block_ids_unique[block_idx] * block_size, [[0, 0], [0, points.shape[1] - 3]])
+    points_local = points - local_refs
 
     # Group points by block
-    blocks = [np.zeros((l, points.shape[1])) for l in block_len]#blocks: l in block len:number of point are assign to the same block
-    #points shape[1]=6. (x,y,z and 3 colors)
+    blocks = [np.zeros((l, points.shape[1])) for l in block_len]
+
     blocks_last_idx = np.zeros(len(block_len), dtype=np.uint32)
     for i, b_idx in enumerate(block_idx):
-        blocks[b_idx][blocks_last_idx[b_idx]] = points_local[i]#store point coordinate in blocks
-        blocks_last_idx[b_idx] += 1#increase counter by 1
+        blocks[b_idx][blocks_last_idx[b_idx]] = points_local[i]
+        blocks_last_idx[b_idx] += 1
 
     # Build binary string recursively using the block_ids
     # after the first time call partition octree fc, the point will be quantize to fit the
@@ -145,13 +141,9 @@ def departition_octree(blocks, binstr_list, bbox_min, bbox_max, level):
                 v = binstr_idxs[binstr_list_idx]
                 cur_bbox = compute_new_bbox(v, *bbox_stack[-1])
                 if cur_level == level:
-                    # Leaf node: decode current block
                     blocks[block_idx] = blocks[block_idx] + np.pad(cur_bbox[0], [0, blocks[block_idx].shape[1] - 3])
-                    # print(f'Read block {block_idx} at binstr {binstr_list_idx} ({cur_bbox})')
                     block_idx += 1
                 else:
-                    # print(f'Child found at idx {binstr_idxs[binstr_list_idx]} for binstr {binstr_list_idx}')
-                    # Non leaf child: stop reading current binstr
                     child_found = True
 
             binstr_list[binstr_list_idx] >>= 1
@@ -166,13 +158,10 @@ def departition_octree(blocks, binstr_list, bbox_min, bbox_max, level):
             # Go to child
             cur_level += 1
             binstr_list_idx += children_counts[parents_stack[-1]]
-            # print(f'Descend to {binstr_list_idx}')
         else:
-            # No children left: ascend octree
             binstr_list_idx = parents_stack.pop()
             cur_level -= 1
             bbox_stack.pop()
-            # print(f'Ascend to {binstr_list_idx}')
 
     return blocks
 

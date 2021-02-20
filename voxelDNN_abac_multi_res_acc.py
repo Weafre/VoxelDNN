@@ -1,20 +1,22 @@
 # inputs: path to saved model, path to point clouds;
 # output: bit per occupied voxel
-import contextlib, sys
+import contextlib
 import arithmetic_coding
 import numpy as np
 import os
 import argparse
 import time
-from supporting_fcs import  occupancy_map_explore
+from voxelDNN_Inference import  occupancy_map_explore
 from voxelDNN_meta_endec import save_compressed_file
 import gzip
 import pickle
-from voxelDNN import  VoxelDNN
+from voxelDNN import VoxelDNN
 import tensorflow as tf
 
-# encode using 1, 2 3,level
+
+# encode using 1, 2 3,3 level
 # statistic for individual block
+# encoding from breadth first sequence for parallel computing
 def VoxelDNN_encoding(args):
     pc_level, ply_path, model_path ,bl_par_depth= args
     departition_level = pc_level - 6
@@ -25,12 +27,12 @@ def VoxelDNN_encoding(args):
     output_path=output_path+'/'+str(bl_par_depth)+'levels'
     outputfile = output_path+'.blocks.bin'
     metadata_file = output_path + '.metadata.bin'
-    heatmap_file = output_path +'.heatmap.pkl'
+    heatmap_file = output_path +'.static.pkl'
 
     start = time.time()
-    #getting encoding input data
+
     boxes,binstr,no_oc_voxels=occupancy_map_explore(ply_path,pc_level,departition_level)
-    #restore voxelDNN
+
     voxelDNN = VoxelDNN(residual_blocks=2)
     voxel_DNN = voxelDNN.restore_voxelDNN(model_path)
 
@@ -53,7 +55,7 @@ def VoxelDNN_encoding(args):
     print('Occupied Voxels: %04d' % no_oc_voxels)
     print('Blocks bitstream: ', outputfile)
     print('Metadata bitstream', metadata_file )
-    print('Heatmap information: ', heatmap_file)
+    print('Encoding statics: ', heatmap_file)
     print('Metadata and file size(in bits): ', metadata_size, file_size)
     print('Average bits per occupied voxels: %.04f' % avg_bpov)
 
@@ -71,20 +73,19 @@ def voxelDNN_encoding_slave(oc, voxelDNN, bitout,bitest,flags,par_bl_level):
         ocv=np.sum(oc[i])
         box = np.asarray(box)
 
-        curr_level = 1
-        max_level = par_bl_level
-        op, flag_ = encode_child_box_test(box, voxelDNN, test_enc, bitest, curr_level, max_level)
-        idx = 0
-        _, curr_bits_cnt = encode_child_box_worker(box, voxelDNN, enc, bitout, flag_, idx, curr_bits_cnt, curr_level,
-                                                   max_level)
-        for fl in flag_:
+        curr_level=1
+        max_level=par_bl_level
+        op3,flag3=encode_child_box_test(box,voxelDNN,test_enc,bitest,curr_level, max_level)
+        idx=0
+        _,curr_bits_cnt=encode_child_box_worker(box, voxelDNN, enc,bitout, flag3, idx,curr_bits_cnt, curr_level,max_level)
+        for fl in flag3:
             flags.append(fl)
-        static.append([ocv,op,flag_,curr_bits_cnt])
+        static.append([ocv,flag3,op3,curr_bits_cnt])
         no_ocv+=ocv
     enc.finish()  # Flush remaining code bits
     return static,flags,no_ocv
 
-def encode_whole_box(box,voxelDNN,enc,bitstream):
+def encode_single_box(box,voxelDNN,enc,bitstream):
     #box 1x64x64x64x1 --> encode ans a box using voxel DNN
     # encoding block as one
     first_bit = bitstream.countingByte * 8
@@ -110,13 +111,15 @@ def encode_whole_box(box,voxelDNN,enc,bitstream):
     last_bit = bitstream.countingByte * 8
     return last_bit-first_bit
 def encode_child_box_test(box,voxelDNN,test_enc,bitest,curr_level, max_level):
-    # box 1x64x64x64x1 --> flag 0 if child box 32 is empty;
-    # flag 1 if non empty and encode using voxelDNN
+    # box 1xdxdxdx1 --> decide to partition or not
+    # flag = 0 if child box is empty;
+    # flag = 1 if non empty and encode using voxelDNN as single block
+    # flag = 2 if it it will be further partitioned
     child_bbox_max = int(box.shape[1]/2)
-    no_bits2=0
-    flag2=[]
-    flag2.append(2)
-    no_bits2+=2
+    no_bits=0
+    flag=[]
+    flag.append(2)
+    no_bits+=2
     for d in range(2):
         for h in range(2):
             for w in range(2):
@@ -130,24 +133,33 @@ def encode_child_box_test(box,voxelDNN,test_enc,bitest,curr_level, max_level):
                 else:
                     # means the current block is not empty
                     if(curr_level==max_level):
-                        child_no_bits=encode_whole_box(child_box,voxelDNN,test_enc,bitest)
+                        child_no_bits=encode_single_box(child_box,voxelDNN,test_enc,bitest)
                         child_flags.append(1)
                         child_no_bits = child_no_bits+2
-                        #print('curr level, max level, bits: ', curr_level, max_level, (last_bit - first_bit + 2))
 
                     else:
+                        #encoding as one
+                        op1=encode_single_box(child_box, voxelDNN, test_enc,bitest)
+                        op1 = op1+2
+
+                        #encoding using 8 sub child blocks
                         op2,rec_child_flag=encode_child_box_test(child_box, voxelDNN,test_enc,bitest,curr_level+1,max_level)
-                        child_no_bits = op2
-                        child_flags=rec_child_flag
+                        if op2 > op1:
+                            child_no_bits = op1
+                            child_flags.append(1)
+                        else:
+                            child_no_bits = op2
+                            child_flags=rec_child_flag
                 for fl in child_flags:
-                    flag2.append(fl)
-                no_bits2+=child_no_bits
-    no_bits1 = encode_whole_box(box, voxelDNN, test_enc, bitest) + 2
+                    flag.append(fl)
+                no_bits+=child_no_bits
+    no_bits1 = encode_single_box(box, voxelDNN, test_enc, bitest) + 2
     flag1 = [1]
-    if (no_bits1 > no_bits2 and curr_level <= max_level):
-        return no_bits2, flag2
+    if (no_bits>no_bits1):
+        return no_bits1,flag1
     else:
-        return no_bits1, flag1
+        return no_bits,flag
+
 
 
 def encode_child_box_worker(box, voxelDNN, enc, bitout,flag,idx,bit_cnt,curr_level, max_level):
@@ -165,27 +177,25 @@ def encode_child_box_worker(box, voxelDNN, enc, bitout,flag,idx,bit_cnt,curr_lev
                     ocv=np.sum(child_box)
                     if ocv == 0.:
                         if(flag[idx]!=0):
-                            print('************** causing error: ',flag[idx],idx)
-                            print('Level: ', curr_level)
+                            print('************** checking condition 1: ',flag[idx],idx)
                         idx+=1
                     else:
                         if(curr_level==max_level):
-                            bit_cnt[curr_level].append([encode_whole_box(child_box, voxelDNN, enc,bitout),ocv])
+                            bit_cnt[curr_level].append([encode_single_box(child_box, voxelDNN, enc,bitout),ocv])
 
                             if (flag[idx] != 1):
-                                print('************** causing error 1: ', flag[idx], idx)
-                                print('Level: ', curr_level)
+                                print('************** checking condition 2: ', flag[idx], idx)
                             idx+=1
                         else:
                             if (flag[idx] == 1):
-                                bit_cnt[curr_level].append([encode_whole_box(child_box, voxelDNN, enc,bitout),ocv])
+                                bit_cnt[curr_level].append([encode_single_box(child_box, voxelDNN, enc,bitout),ocv])
                                 idx+=1
                             elif(flag[idx]==2):
                             #idx+=1
                                 idx,bit_cnt=encode_child_box_worker(child_box,voxelDNN,enc,bitout,flag,idx,bit_cnt,curr_level+1,max_level)
     elif flag[idx] == 1:
         ocv = np.sum(box)
-        bit_cnt[curr_level - 1].append([ocv, encode_whole_box(box, voxelDNN, enc, bitout)])
+        bit_cnt[curr_level - 1].append([ocv, encode_single_box(box, voxelDNN, enc, bitout)])
         idx += 1
     return idx,bit_cnt
 
