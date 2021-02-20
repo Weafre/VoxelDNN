@@ -11,3 +11,4 @@ Model/voxelCNN/
 Output/
 Model/*
 removing/
+.DS_Store
